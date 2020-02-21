@@ -1,3 +1,5 @@
+use rdkafka::consumer::ConsumerContext;
+use rdkafka::consumer::MessageStream;
 use clap::{value_t, App, Arg};
 use futures::stream::FuturesUnordered;
 use futures::{StreamExt};
@@ -12,34 +14,12 @@ use crate::example_utils::setup_logger;
 
 mod example_utils;
 
-fn run_async_processor(
-    brokers: String,
-    group_id: String,
-    input_topic: String,
-) -> impl Future<Output=()> + Send {
-    async move {
-
-        let consumer: StreamConsumer = ClientConfig::new()
-        .set("group.id", &group_id)
-        .set("bootstrap.servers", &brokers)
-        .set("enable.partition.eof", "false")
-        .set("session.timeout.ms", "6000")
-        .set("enable.auto.commit", "false")
-        .create()
-        .expect("Consumer creation failed");
-
-        consumer
-        .subscribe(&[&input_topic])
-        .expect("Can't subscribe to specified topic");
-
-
-    consumer.start().map(|borrowed_message_result| {
-            borrowed_message_result.expect("kafka consumer error").payload().unwrap_or_default().len()
-    }).for_each(|len: usize| {
-        eprintln!("payload length: {}", len);
-        async { }
-    }).await;
-    }
+fn run_async_processor<'a, C: ConsumerContext + 'a>(stream: MessageStream<'a, C>) -> impl Future<Output=()> + Send + 'a {
+        stream.map(|borrowed_message_result| {
+            async { borrowed_message_result.expect("kafka consumer error").detach() }
+        }).buffered(100).for_each(|_| {
+            async { }
+        })
 }
 
 #[tokio::main]
@@ -87,20 +67,36 @@ async fn main() {
 
     setup_logger(true, matches.value_of("log-conf"));
 
-    let brokers = matches.value_of("brokers").unwrap();
-    let group_id = matches.value_of("group-id").unwrap();
-    let input_topic = matches.value_of("input-topic").unwrap();
+    let brokers = matches.value_of("brokers").unwrap().to_string();
+    let group_id = matches.value_of("group-id").unwrap().to_string();
+    let input_topic = matches.value_of("input-topic").unwrap().to_string();
     let num_workers = value_t!(matches, "num-workers", usize).unwrap();
 
     (0..num_workers)
         .map(|_| {
-            tokio::spawn(run_async_processor(
-                brokers.to_owned(),
-                group_id.to_owned(),
-                input_topic.to_owned(),
-            ))
+            let group_id = group_id.clone();
+            let brokers = brokers.clone();
+            let input_topic = input_topic.clone();
+            tokio::spawn(async move {
+                let consumer: StreamConsumer = ClientConfig::new()
+                    .set("group.id", &group_id)
+                    .set("bootstrap.servers", &brokers)
+                    .set("enable.partition.eof", "false")
+                    .set("session.timeout.ms", "6000")
+                    .set("enable.auto.commit", "false")
+                    .create()
+                    .expect("Consumer creation failed");
+
+                consumer
+                    .subscribe(&[&input_topic])
+                    .expect("Can't subscribe to specified topic");
+
+                let stream = consumer.start();
+
+                run_async_processor(stream).await;
+            })
         })
         .collect::<FuturesUnordered<_>>()
         .for_each(|_| async { })
-        .await
+        .await;
 }
