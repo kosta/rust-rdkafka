@@ -18,6 +18,7 @@ fn run_async_processor<'s, S>(stream: S) -> impl Future<Output=()> + Send + 's
 where
     S: Stream<Item = KafkaResult<BorrowedMessage<'s>>> + 's + Send,
 {
+    // Note: if you wrap this in an async { ...await }, it will fail to compile
     stream.map(|borrowed_message_result| {
         async { borrowed_message_result.expect("kafka consumer error").detach() }
     }).buffered(100).for_each(|_| {
