@@ -1,5 +1,6 @@
-use rdkafka::consumer::ConsumerContext;
-use rdkafka::consumer::MessageStream;
+use rdkafka::message::BorrowedMessage;
+use rdkafka::error::KafkaResult;
+use futures::Stream;
 use clap::{value_t, App, Arg};
 use futures::stream::FuturesUnordered;
 use futures::{StreamExt};
@@ -7,19 +8,21 @@ use futures::{StreamExt};
 use rdkafka::config::ClientConfig;
 use rdkafka::consumer::stream_consumer::StreamConsumer;
 use rdkafka::consumer::{Consumer};
-use rdkafka::Message;
 use std::future::Future;
 
 use crate::example_utils::setup_logger;
 
 mod example_utils;
 
-fn run_async_processor<'a, C: ConsumerContext + 'a>(stream: MessageStream<'a, C>) -> impl Future<Output=()> + Send + 'a {
-        stream.map(|borrowed_message_result| {
-            async { borrowed_message_result.expect("kafka consumer error").detach() }
-        }).buffered(100).for_each(|_| {
-            async { }
-        })
+fn run_async_processor<'s, S>(stream: S) -> impl Future<Output=()> + Send + 's
+where
+    S: Stream<Item = KafkaResult<BorrowedMessage<'s>>> + 's + Send,
+{
+    stream.map(|borrowed_message_result| {
+        async { borrowed_message_result.expect("kafka consumer error").detach() }
+    }).buffered(100).for_each(|_| {
+        async { }
+    })
 }
 
 #[tokio::main]
